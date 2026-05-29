@@ -1,136 +1,141 @@
 from datetime import datetime
-from sqlalchemy import Column, Integer, String, Float, DateTime, ForeignKey
-from sqlalchemy.orm import DeclarativeBase, relationship, Mapped, mapped_column
-from sqlalchemy.ext.asyncio import AsyncAttrs
+from typing import Optional
 
+from sqlalchemy import Integer, String, Float, DateTime, ForeignKey, func
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 
-class Base(AsyncAttrs, DeclarativeBase):
-    pass
+from database.engine import Base
 
 
 class User(Base):
-    __tablename__ = 'users'
+    __tablename__ = "users"
 
     id: Mapped[int] = mapped_column(
         Integer, primary_key=True, autoincrement=True)
-    tg_ID: Mapped[int] = mapped_column(Integer, unique=True, nullable=False)
-    nick: Mapped[str | None] = mapped_column(String, nullable=True)
+    tg_id: Mapped[int] = mapped_column(
+        Integer, unique=True, nullable=False, index=True)
+    nick: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     create_date: Mapped[datetime] = mapped_column(
-        DateTime, nullable=False, default=datetime.utcnow
+        DateTime(timezone=True), nullable=False, server_default=func.now()
     )
 
-    # One-to-One
+    # One-to-One: у кожного юзера один кошелек
     wallet: Mapped["Wallet"] = relationship(
         "Wallet",
         back_populates="user",
         uselist=False,
-        cascade="all, delete-orphan"
+        cascade="all, delete-orphan",
+        lazy="selectin",  # автоматично підвантажується разом з юзером
     )
 
-    # Транзакції
-    sended_transactions: Mapped[list["Transaction"]] = relationship(
+    sent_transactions: Mapped[list["Transaction"]] = relationship(
         "Transaction",
         foreign_keys="Transaction.sender_id",
         back_populates="sender",
-        lazy="selectin"          # рекомендовано для async
+        lazy="selectin",
     )
 
     received_transactions: Mapped[list["Transaction"]] = relationship(
         "Transaction",
         foreign_keys="Transaction.receiver_id",
         back_populates="receiver",
-        lazy="selectin"
+        lazy="selectin",
     )
+
+    def __repr__(self) -> str:
+        return f"<User id={self.id} tg_id={self.tg_id} nick={self.nick}>"
 
 
 class Wallet(Base):
-    __tablename__ = 'wallets'
+    __tablename__ = "wallets"
 
     id: Mapped[int] = mapped_column(
         Integer, primary_key=True, autoincrement=True)
-    user_id: Mapped[int | None] = mapped_column(
-        Integer,
-        ForeignKey('users.id'),
-        unique=True,
-        nullable=True
+    user_id: Mapped[Optional[int]] = mapped_column(
+        Integer, ForeignKey("users.id", ondelete="CASCADE"), unique=True, nullable=True
     )
-
     balance: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
     private_key: Mapped[str] = mapped_column(
         String, unique=True, nullable=False)
-    address: Mapped[str] = mapped_column(String, unique=True, nullable=False)
+    address: Mapped[str] = mapped_column(
+        String, unique=True, nullable=False, index=True)
 
-    user: Mapped["User | None"] = relationship("User", back_populates="wallet")
+    user: Mapped[Optional["User"]] = relationship(
+        "User", back_populates="wallet")
 
-    sended_transactions: Mapped[list["Transaction"]] = relationship(
+    sent_transactions: Mapped[list["Transaction"]] = relationship(
         "Transaction",
         foreign_keys="Transaction.sender_wallet_id",
         back_populates="sender_wallet",
-        lazy="selectin"
+        lazy="selectin",
     )
 
     received_transactions: Mapped[list["Transaction"]] = relationship(
         "Transaction",
         foreign_keys="Transaction.receiver_wallet_id",
         back_populates="receiver_wallet",
-        lazy="selectin"
+        lazy="selectin",
     )
+
+    def __repr__(self) -> str:
+        return f"<Wallet id={self.id} address={self.address} balance={self.balance}>"
 
 
 class Transaction(Base):
-    __tablename__ = 'transactions'
+    __tablename__ = "transactions"
 
     id: Mapped[int] = mapped_column(
         Integer, primary_key=True, autoincrement=True)
 
-    sender_id: Mapped[int | None] = mapped_column(
-        Integer, ForeignKey('users.id'), nullable=True
+    sender_id: Mapped[Optional[int]] = mapped_column(
+        Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )
-    receiver_id: Mapped[int | None] = mapped_column(
-        Integer, ForeignKey('users.id'), nullable=True
+    receiver_id: Mapped[Optional[int]] = mapped_column(
+        Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    sender_wallet_id: Mapped[Optional[int]] = mapped_column(
+        Integer, ForeignKey("wallets.id", ondelete="SET NULL"), nullable=True
+    )
+    receiver_wallet_id: Mapped[Optional[int]] = mapped_column(
+        Integer, ForeignKey("wallets.id", ondelete="SET NULL"), nullable=True
     )
 
-    sender_wallet_id: Mapped[int | None] = mapped_column(
-        Integer, ForeignKey('wallets.id'), nullable=True
-    )
-    receiver_wallet_id: Mapped[int | None] = mapped_column(
-        Integer, ForeignKey('wallets.id'), nullable=True
-    )
+    sender_address: Mapped[Optional[str]
+                           ] = mapped_column(String, nullable=True)
+    receiver_address: Mapped[str] = mapped_column(String, nullable=False)
 
-    sender_address: Mapped[str | None] = mapped_column(String, nullable=True)
-    receiver_address: Mapped[str | None] = mapped_column(String, nullable=True)
-
-    amount_btc_with_fee: Mapped[float] = mapped_column(Float, nullable=False)
-    amount_btc_without_fee: Mapped[float] = mapped_column(
-        Float, nullable=False)
-    fee: Mapped[float] = mapped_column(Float, nullable=False)
+    # Суми в сатоші (int надійніший за float для грошей)
+    amount_satoshi: Mapped[int] = mapped_column(Integer, nullable=False)
+    fee_satoshi: Mapped[int] = mapped_column(Integer, nullable=False)
 
     date_of_transaction: Mapped[datetime] = mapped_column(
-        DateTime, nullable=False, default=datetime.utcnow
+        DateTime(timezone=True), nullable=False, server_default=func.now()
     )
-    tx_hash: Mapped[str] = mapped_column(String, unique=True, nullable=False)
+    tx_hash: Mapped[str] = mapped_column(
+        String, unique=True, nullable=False, index=True)
 
-    # Відносини
-    sender: Mapped["User | None"] = relationship(
-        "User",
-        foreign_keys=[sender_id],
-        back_populates="sended_transactions"
+    # Relationships
+    sender: Mapped[Optional["User"]] = relationship(
+        "User", foreign_keys=[sender_id], back_populates="sent_transactions"
     )
-
-    receiver: Mapped["User | None"] = relationship(
-        "User",
-        foreign_keys=[receiver_id],
-        back_populates="received_transactions"
+    receiver: Mapped[Optional["User"]] = relationship(
+        "User", foreign_keys=[receiver_id], back_populates="received_transactions"
     )
-
-    sender_wallet: Mapped["Wallet | None"] = relationship(
-        "Wallet",
-        foreign_keys=[sender_wallet_id],
-        back_populates="sended_transactions"
+    sender_wallet: Mapped[Optional["Wallet"]] = relationship(
+        "Wallet", foreign_keys=[sender_wallet_id], back_populates="sent_transactions"
+    )
+    receiver_wallet: Mapped[Optional["Wallet"]] = relationship(
+        "Wallet", foreign_keys=[receiver_wallet_id], back_populates="received_transactions"
     )
 
-    receiver_wallet: Mapped["Wallet | None"] = relationship(
-        "Wallet",
-        foreign_keys=[receiver_wallet_id],
-        back_populates="received_transactions"
-    )
+    @property
+    def amount_btc(self) -> float:
+        """Конвертуємо сатоші в BTC для відображення."""
+        return self.amount_satoshi / 100_000_000
+
+    @property
+    def fee_btc(self) -> float:
+        return self.fee_satoshi / 100_000_000
+
+    def __repr__(self) -> str:
+        return f"<Transaction id={self.id} amount={self.amount_satoshi} sat hash={self.tx_hash[:8]}...>"
